@@ -1,16 +1,10 @@
 # Signed-page Tap
 
-## How do I install these formulae?
+## Install
 
-`brew install signed-page/tap/<formula>`
-
-Or `brew tap signed-page/tap` and then `brew install <formula>`.
-
-Or, in a `brew bundle` `Brewfile`:
-
-```ruby
-tap "signed-page/tap"
-brew "<formula>"
+```bash
+brew install signed-page/tap/pdf
+pdf-sign --help
 ```
 
 ## Documentation

@@ -1,0 +1,321 @@
+name: Publish Homebrew bottle
+
+on:
+  repository_dispatch:
+    types:
+      - pdf-sign-release
+
+concurrency:
+  group: homebrew-pdf-${{ github.event.client_payload.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE: ghcr.io/signed-page/tap/pdf
+
+jobs:
+  publish:
+    name: Publish immutable pdf bottle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Validate dispatch and resolve source tag
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_REPOSITORY: ${{ github.event.client_payload.source_repository }}
+          PAYLOAD_SHA: ${{ github.event.client_payload.source_sha }}
+          PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
+          PAYLOAD_VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          set -euo pipefail
+
+          [[ "$PAYLOAD_REPOSITORY" == "signed-page/pdf" ]] || {
+            echo "Unexpected source repository" >&2
+            exit 1
+          }
+          [[ "$PAYLOAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "source_sha must be a 40-character lowercase Git commit SHA" >&2
+            exit 1
+          }
+          [[ "$PAYLOAD_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "version must be a stable semantic version" >&2
+            exit 1
+          }
+          [[ "$PAYLOAD_TAG" == "v${PAYLOAD_VERSION}" ]] || {
+            echo "tag must equal v<version>" >&2
+            exit 1
+          }
+
+          object_json=$(gh api "repos/${PAYLOAD_REPOSITORY}/git/ref/tags/${PAYLOAD_TAG}")
+          object_type=$(jq -er '.object.type' <<<"$object_json")
+          object_sha=$(jq -er '.object.sha' <<<"$object_json")
+          for _ in $(seq 1 16); do
+            case "$object_type" in
+              commit)
+                break
+                ;;
+              tag)
+                object_json=$(gh api "repos/${PAYLOAD_REPOSITORY}/git/tags/${object_sha}")
+                object_type=$(jq -er '.object.type' <<<"$object_json")
+                object_sha=$(jq -er '.object.sha' <<<"$object_json")
+                ;;
+              *)
+                echo "Tag resolves to unsupported Git object type: ${object_type}" >&2
+                exit 1
+                ;;
+            esac
+          done
+          [[ "$object_type" == "commit" ]] || {
+            echo "Tag indirection exceeds 16 objects" >&2
+            exit 1
+          }
+          [[ "$object_sha" == "$PAYLOAD_SHA" ]] || {
+            echo "Public tag does not resolve to source_sha" >&2
+            exit 1
+          }
+
+          {
+            echo "repository=$PAYLOAD_REPOSITORY"
+            echo "sha=$PAYLOAD_SHA"
+            echo "tag=$PAYLOAD_TAG"
+            echo "version=$PAYLOAD_VERSION"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+
+      - name: Install OCI tooling
+        run: nix profile install nixpkgs#skopeo
+
+      - name: Build exact source release
+        env:
+          SOURCE_REPOSITORY: ${{ steps.source.outputs.repository }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          nix build -L "github:${SOURCE_REPOSITORY}/${SOURCE_SHA}#homebrew-release" --out-link result
+
+      - name: Verify Nix release metadata and OCI layout
+        id: metadata
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          release_json="result/metadata/release.json"
+          bottle_json="result/metadata/pdf.bottle.json"
+          [[ -f "$release_json" && -f "$bottle_json" ]] || {
+            echo "Nix release metadata is incomplete" >&2
+            exit 1
+          }
+
+          jq -e --arg version "$VERSION" '
+            type == "object" and
+            (.schema == 1) and
+            (.formula == "pdf") and
+            (.version == $version) and
+            ((keys | sort) == ["bottles", "formula", "oci", "schema", "source", "version"]) and
+            ((.source | keys | sort) == ["filename", "sha256"]) and
+            (.source.filename == ("pdf-sign-" + $version + "-source.tar.gz")) and
+            (.source.sha256 | test("^[0-9a-f]{64}$")) and
+            ((.oci | keys | sort) == ["indexDigest", "repository"]) and
+            (.oci.repository == "ghcr.io/signed-page/tap/pdf") and
+            (.oci.indexDigest | test("^sha256:[0-9a-f]{64}$")) and
+            ((.bottles | keys | sort) == ["arm64_linux", "arm64_sonoma", "x86_64_linux"]) and
+            (all(.bottles[];
+              ((keys | sort) == ["cellar", "installedSize", "manifestDigest", "sha256", "size"]) and
+              (.sha256 | test("^[0-9a-f]{64}$")) and
+              (.manifestDigest | test("^sha256:[0-9a-f]{64}$")) and
+              ((.size | type) == "number" and .size > 0 and (.size | floor) == .size) and
+              ((.installedSize | type) == "number" and .installedSize > 0 and
+                (.installedSize | floor) == .installedSize) and
+              (.cellar == "any_skip_relocation")
+            ))
+          ' "$release_json" >/dev/null
+
+          jq -e --arg version "$VERSION" '
+            (keys == ["pdf"]) and
+            (.pdf.formula.name == "pdf") and
+            (.pdf.formula.pkg_version == $version) and
+            (.pdf.formula.path == "Library/Taps/signed-page/homebrew-tap/Formula/pdf.rb") and
+            (.pdf.bottle.root_url == "https://ghcr.io/v2/signed-page/tap") and
+            (.pdf.bottle.cellar == "any_skip_relocation") and
+            (.pdf.bottle.rebuild == 0) and
+            ((.pdf.bottle.tags | keys | sort) == ["arm64_linux", "arm64_sonoma", "x86_64_linux"])
+          ' "$bottle_json" >/dev/null
+
+          for tag in arm64_sonoma arm64_linux x86_64_linux; do
+            release_sha=$(jq -er --arg tag "$tag" '.bottles[$tag].sha256' "$release_json")
+            bottle_sha=$(jq -er --arg tag "$tag" '.pdf.bottle.tags[$tag].sha256' "$bottle_json")
+            [[ "$release_sha" == "$bottle_sha" ]] || {
+              echo "Bottle metadata disagrees for ${tag}" >&2
+              exit 1
+            }
+          done
+
+          source_filename=$(jq -er '.source.filename' "$release_json")
+          expected_source_sha=$(jq -er '.source.sha256' "$release_json")
+          actual_source_sha=$(sha256sum "result/source/${source_filename}" | cut -d' ' -f1)
+          [[ "$actual_source_sha" == "$expected_source_sha" ]] || {
+            echo "Source archive digest disagrees with release.json" >&2
+            exit 1
+          }
+
+          index_digest=$(jq -er '.oci.indexDigest' "$release_json")
+          layout_digest=$(jq -er --arg version "$VERSION" '
+            select(.schemaVersion == 2) |
+            .manifests as $manifests |
+            select(($manifests | length) == 1) |
+            $manifests[0] |
+            select(.mediaType == "application/vnd.oci.image.index.v1+json") |
+            select(.annotations["org.opencontainers.image.ref.name"] == $version) |
+            .digest
+          ' result/oci-layout/index.json)
+          [[ "$layout_digest" == "$index_digest" ]] || {
+            echo "OCI layout and release.json index digests disagree" >&2
+            exit 1
+          }
+
+          digest_hex=${index_digest#sha256:}
+          index_blob="result/oci-layout/blobs/sha256/${digest_hex}"
+          [[ -f "$index_blob" ]] || {
+            echo "OCI index blob is missing" >&2
+            exit 1
+          }
+          actual_index_digest="sha256:$(sha256sum "$index_blob" | cut -d' ' -f1)"
+          [[ "$actual_index_digest" == "$index_digest" ]] || {
+            echo "OCI index blob digest is invalid" >&2
+            exit 1
+          }
+
+          echo "digest=$index_digest" >>"$GITHUB_OUTPUT"
+
+      - name: Authenticate to GHCR and publish immutably
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.source.outputs.version }}
+          EXPECTED_DIGEST: ${{ steps.metadata.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          skopeo login ghcr.io \
+            --username "$GITHUB_ACTOR" \
+            --password "$GITHUB_TOKEN" \
+            --compat-auth-file "$HOME/.docker/config.json"
+          remote_raw="$RUNNER_TEMP/remote-index.json"
+          remote_error="$RUNNER_TEMP/remote-inspect.err"
+
+          set +e
+          skopeo inspect --raw "docker://${IMAGE}:${VERSION}" >"$remote_raw" 2>"$remote_error"
+          inspect_status=$?
+          set -e
+
+          if [[ $inspect_status -eq 0 ]]; then
+            remote_digest="sha256:$(sha256sum "$remote_raw" | cut -d' ' -f1)"
+            [[ "$remote_digest" == "$EXPECTED_DIGEST" ]] || {
+              echo "Refusing to overwrite ${IMAGE}:${VERSION}: existing digest is ${remote_digest}" >&2
+              exit 1
+            }
+            echo "Remote tag already contains the expected immutable index"
+            published=false
+          elif [[ "$(<"$remote_error")" == *"manifest unknown"* || "$(<"$remote_error")" == *"name unknown"* ]]; then
+            # Recheck immediately before the only operation capable of assigning the tag.
+            if skopeo inspect --raw "docker://${IMAGE}:${VERSION}" >"$remote_raw" 2>"$remote_error"; then
+              remote_digest="sha256:$(sha256sum "$remote_raw" | cut -d' ' -f1)"
+              [[ "$remote_digest" == "$EXPECTED_DIGEST" ]] || {
+                echo "Refusing to overwrite concurrently-published digest ${remote_digest}" >&2
+                exit 1
+              }
+              published=false
+            elif [[ "$(<"$remote_error")" == *"manifest unknown"* || "$(<"$remote_error")" == *"name unknown"* ]]; then
+              skopeo copy --all --preserve-digests \
+                "oci:${GITHUB_WORKSPACE}/result/oci-layout:${VERSION}" \
+                "docker://${IMAGE}:${VERSION}"
+              published=true
+            else
+              cat "$remote_error" >&2
+              exit 1
+            fi
+          else
+            cat "$remote_error" >&2
+            exit 1
+          fi
+
+          skopeo inspect --raw "docker://${IMAGE}:${VERSION}" >"$remote_raw"
+          published_digest="sha256:$(sha256sum "$remote_raw" | cut -d' ' -f1)"
+          [[ "$published_digest" == "$EXPECTED_DIGEST" ]] || {
+            echo "Published tag does not resolve to the Nix-computed index" >&2
+            exit 1
+          }
+          {
+            echo "digest=$published_digest"
+            echo "published=$published"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Attempt to make the package public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh api --method PATCH \
+            "/orgs/signed-page/packages/container/tap%2Fpdf" \
+            -f visibility=public >/dev/null; then
+            echo "::warning::GITHUB_TOKEN could not change package visibility; anonymous pull verification will remain authoritative"
+          fi
+
+      - name: Attest OCI index provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/signed-page/tap/pdf
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify OCI provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.source.outputs.version }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://${IMAGE}@${DIGEST}" --repo "$GITHUB_REPOSITORY"
+
+      - name: Prove anonymous manifest and blob pulls
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+          EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          skopeo logout ghcr.io || true
+          skopeo logout --authfile "$HOME/.docker/config.json" ghcr.io || true
+          anonymous_auth="$RUNNER_TEMP/anonymous-auth.json"
+          printf '{"auths":{}}\n' >"$anonymous_auth"
+          anonymous_raw="$RUNNER_TEMP/anonymous-index.json"
+          anonymous_layout="$RUNNER_TEMP/anonymous-layout"
+
+          REGISTRY_AUTH_FILE="$anonymous_auth" skopeo inspect --raw \
+            "docker://${IMAGE}@${EXPECTED_DIGEST}" >"$anonymous_raw"
+          anonymous_digest="sha256:$(sha256sum "$anonymous_raw" | cut -d' ' -f1)"
+          [[ "$anonymous_digest" == "$EXPECTED_DIGEST" ]] || {
+            echo "Anonymous manifest pull returned the wrong index" >&2
+            exit 1
+          }
+
+          REGISTRY_AUTH_FILE="$anonymous_auth" skopeo copy --all --preserve-digests \
+            "docker://${IMAGE}@${EXPECTED_DIGEST}" \
+            "oci:${anonymous_layout}:${VERSION}"
+          copied_digest=$(jq -er '.manifests[0].digest' "${anonymous_layout}/index.json")
+          [[ "$copied_digest" == "$EXPECTED_DIGEST" ]] || {
+            echo "Anonymous blob pull did not preserve the expected index" >&2
+            exit 1
+          }

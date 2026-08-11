@@ -1,8 +1,13 @@
+# frozen_string_literal: true
+
 class Pdf < Formula
   desc "Sign and verify PDFs with OpenPGP and Sigstore"
   homepage "https://signed.page"
   url "<%= source_url %>"
+  # The checksum is an ERB placeholder; the updater validates it before rendering.
+  # rubocop:disable FormulaAudit/Checksum
   sha256 "<%= source_sha256 %>"
+  # rubocop:enable FormulaAudit/Checksum
   license "GPL-3.0-only"
 
   depends_on "capnp" => :build

@@ -1,11 +1,15 @@
 #!/usr/bin/env ruby
+# typed: strict
 # frozen_string_literal: true
 
 require "erb"
 require "fileutils"
 require "json"
 require "open3"
+# This executable runs outside Homebrew, where Pathname is not preloaded.
+# rubocop:disable Lint/RedundantRequireStatement
 require "pathname"
+# rubocop:enable Lint/RedundantRequireStatement
 require "tempfile"
 require "timeout"
 require "uri"
@@ -97,15 +101,15 @@ module PdfFormulaUpdate
       wanted = expected.sort
       return if actual == wanted
 
-      raise MetadataError, "#{path} keys must be exactly #{wanted.join(', ')}; got #{actual.join(', ')}"
+      raise MetadataError, "#{path} keys must be exactly #{wanted.join(", ")}; got #{actual.join(", ")}"
     end
 
     def permitted_keys(value, required:, optional:, path:)
       object = hash(value, path)
       missing = required - object.keys
       extra = object.keys - required - optional
-      raise MetadataError, "#{path} is missing keys: #{missing.join(', ')}" unless missing.empty?
-      raise MetadataError, "#{path} has unsupported keys: #{extra.join(', ')}" unless extra.empty?
+      raise MetadataError, "#{path} is missing keys: #{missing.join(", ")}" unless missing.empty?
+      raise MetadataError, "#{path} has unsupported keys: #{extra.join(", ")}" unless extra.empty?
     end
 
     def bare_sha(value, path)
@@ -147,19 +151,19 @@ module PdfFormulaUpdate
 
     def validate_release(document)
       @shape.exact_keys(document, %w[bottles formula oci schema source version], "release")
-      raise MetadataError, "release.schema must equal 1" unless document["schema"] == 1
-      raise MetadataError, "release.formula must equal #{FORMULA.inspect}" unless document["formula"] == FORMULA
+      raise MetadataError, "release.schema must equal 1" if document["schema"] != 1
+      raise MetadataError, "release.formula must equal #{FORMULA.inspect}" if document["formula"] != FORMULA
 
       version = validate_version(document["version"], "release.version")
       source_url, source_sha256 = validate_source(document["source"], version)
       index_digest = validate_oci(document["oci"])
       bottles = validate_release_bottles(document["bottles"])
       Release.new(
-        version: version,
-        source_url: source_url,
+        version:       version,
+        source_url:    source_url,
         source_sha256: source_sha256,
-        index_digest: index_digest,
-        bottles: bottles,
+        index_digest:  index_digest,
+        bottles:       bottles,
       )
     end
 
@@ -174,7 +178,7 @@ module PdfFormulaUpdate
       @shape.exact_keys(source, %w[filename sha256], "release.source")
       filename = @shape.string(source["filename"], "release.source.filename")
       expected = "pdf-sign-#{version}-source.tar.gz"
-      raise MetadataError, "release.source.filename must equal #{expected.inspect}" unless filename == expected
+      raise MetadataError, "release.source.filename must equal #{expected.inspect}" if filename != expected
 
       url = "https://github.com/#{SOURCE_REPOSITORY}/releases/download/v#{version}/#{filename}"
       validate_source_url(url, version, filename)
@@ -191,7 +195,10 @@ module PdfFormulaUpdate
 
     def validate_oci(oci)
       @shape.exact_keys(oci, %w[indexDigest repository], "release.oci")
-      raise MetadataError, "release.oci.repository must equal #{OCI_REPOSITORY.inspect}" unless oci["repository"] == OCI_REPOSITORY
+      if oci["repository"] != OCI_REPOSITORY
+        raise MetadataError,
+              "release.oci.repository must equal #{OCI_REPOSITORY.inspect}"
+      end
 
       @shape.digest(oci["indexDigest"], "release.oci.indexDigest")
     end
@@ -212,7 +219,10 @@ module PdfFormulaUpdate
       @shape.digest(bottle["manifestDigest"], "#{path}.manifestDigest")
       @shape.integer(bottle["size"], "#{path}.size", minimum: 1)
       @shape.integer(bottle["installedSize"], "#{path}.installedSize", minimum: 1)
-      raise MetadataError, "#{path}.cellar must equal any_skip_relocation" unless bottle["cellar"] == "any_skip_relocation"
+      return if bottle["cellar"] == "any_skip_relocation"
+
+      raise MetadataError,
+            "#{path}.cellar must equal any_skip_relocation"
     end
 
     def validate_bottle_json(document, release)
@@ -226,20 +236,28 @@ module PdfFormulaUpdate
     def validate_formula_identity(formula, version)
       path = "bottle metadata.#{FORMULA}.formula"
       @shape.permitted_keys(formula, required: FORMULA_KEYS, optional: FORMULA_OPTIONAL_KEYS, path: path)
-      raise MetadataError, "#{path}.name must equal #{FORMULA.inspect}" unless formula["name"] == FORMULA
-      raise MetadataError, "#{path}.pkg_version disagrees with release.version" unless formula["pkg_version"] == version
-      expected = "Library/Taps/signed-page/homebrew-tap/#{FORMULA_PATH}"
-      raise MetadataError, "#{path}.path must equal #{expected.inspect}" unless formula["path"] == expected
-      if formula.key?("tap_git_path") && formula["tap_git_path"] != FORMULA_PATH
-        raise MetadataError, "#{path}.tap_git_path must equal #{FORMULA_PATH.inspect}"
+      raise MetadataError, "#{path}.name must equal #{FORMULA.inspect}" if formula["name"] != FORMULA
+      if formula["pkg_version"] != version
+        raise MetadataError,
+              "#{path}.pkg_version disagrees with release.version"
       end
+
+      expected = "Library/Taps/signed-page/homebrew-tap/#{FORMULA_PATH}"
+      raise MetadataError, "#{path}.path must equal #{expected.inspect}" if formula["path"] != expected
+      return unless formula.key?("tap_git_path")
+      return if formula["tap_git_path"] == FORMULA_PATH
+
+      raise MetadataError, "#{path}.tap_git_path must equal #{FORMULA_PATH.inspect}"
     end
 
     def validate_bottle_payload(bottle, release)
       path = "bottle metadata.#{FORMULA}.bottle"
       @shape.permitted_keys(bottle, required: BOTTLE_KEYS, optional: BOTTLE_OPTIONAL_KEYS, path: path)
-      raise MetadataError, "#{path}.root_url must equal #{BOTTLE_ROOT_URL.inspect}" unless bottle["root_url"] == BOTTLE_ROOT_URL
-      raise MetadataError, "#{path}.rebuild must equal 0" unless bottle["rebuild"] == 0
+      if bottle["root_url"] != BOTTLE_ROOT_URL
+        raise MetadataError,
+              "#{path}.root_url must equal #{BOTTLE_ROOT_URL.inspect}"
+      end
+      raise MetadataError, "#{path}.rebuild must equal 0" if bottle["rebuild"] != 0
 
       tags = @shape.hash(bottle["tags"], "#{path}.tags")
       @shape.exact_keys(tags, BOTTLE_TAGS, "#{path}.tags")
@@ -250,10 +268,10 @@ module PdfFormulaUpdate
       path = "bottle metadata.#{FORMULA}.bottle.tags.#{tag}"
       @shape.permitted_keys(tag_data, required: TAG_KEYS, optional: TAG_OPTIONAL_KEYS, path: path)
       sha256 = @shape.bare_sha(tag_data["sha256"], "#{path}.sha256")
-      raise MetadataError, "#{path}.sha256 disagrees with release metadata" unless sha256 == release_bottle["sha256"]
+      raise MetadataError, "#{path}.sha256 disagrees with release metadata" if sha256 != release_bottle["sha256"]
 
       cellar = tag_data.fetch("cellar", common_cellar)
-      raise MetadataError, "#{path}.cellar must equal any_skip_relocation" unless cellar == "any_skip_relocation"
+      raise MetadataError, "#{path}.cellar must equal any_skip_relocation" if cellar != "any_skip_relocation"
       return unless tag_data.key?("installed_size")
       return if tag_data["installed_size"] == release_bottle["installedSize"]
 
@@ -295,7 +313,7 @@ module PdfFormulaUpdate
       output = @runner.capture!(@brew, "info", "--json=v2", "--formula", formula_path.to_s)
       document = StrictJSON.parse(output, "brew info output")
       formulae = document["formulae"]
-      unless formulae.is_a?(Array) && formulae.length == 1
+      if !formulae.is_a?(Array) || formulae.length != 1
         raise Error, "brew info must return exactly one formula"
       end
 
@@ -305,17 +323,17 @@ module PdfFormulaUpdate
     private
 
     def build_state(formula)
-      raise Error, "brew resolved the wrong formula" unless formula["name"] == FORMULA
+      raise Error, "brew resolved the wrong formula" if formula["name"] != FORMULA
 
       stable_url = @shape.hash(formula.dig("urls", "stable"), "brew info urls.stable")
       bottle = formula.dig("bottle", "stable") || {}
       FormulaState.new(
-        version: formula.dig("versions", "stable"),
-        source_url: stable_url["url"],
-        source_sha256: stable_url["checksum"],
+        version:         formula.dig("versions", "stable"),
+        source_url:      stable_url["url"],
+        source_sha256:   stable_url["checksum"],
         bottle_root_url: bottle["root_url"],
-        bottle_rebuild: bottle["rebuild"],
-        bottles: bottle_files(bottle["files"] || {}),
+        bottle_rebuild:  bottle["rebuild"],
+        bottles:         bottle_files(bottle["files"] || {}),
       )
     end
 
@@ -366,14 +384,19 @@ module PdfFormulaUpdate
 
     def update_existing(release, bottle_path)
       current = @inspector.read(@formula_path)
-      unless current.version.is_a?(String) && SEMVER.match?(current.version)
+      if !current.version.is_a?(String) || !SEMVER.match?(current.version)
         raise Error, "existing Formula version is not a stable semantic version"
       end
+
       comparison = Gem::Version.new(release.version) <=> Gem::Version.new(current.version)
-      raise Error, "refusing to downgrade #{FORMULA} from #{current.version} to #{release.version}" if comparison.negative?
+      if comparison.negative?
+        raise Error,
+              "refusing to downgrade #{FORMULA} from #{current.version} to #{release.version}"
+      end
 
       if comparison.zero?
-        raise Error, "same-version metadata conflicts with Formula/#{FORMULA}.rb" unless state_matches?(current, release)
+        raise Error, "same-version metadata conflicts with Formula/#{FORMULA}.rb" unless state_matches?(current,
+                                                                                                        release)
 
         @output.puts "#{FORMULA} #{release.version} already has identical release metadata"
         return :unchanged
@@ -389,14 +412,14 @@ module PdfFormulaUpdate
     def mutate_formula
       take_snapshot
       yield
-    rescue StandardError
+    rescue
       restore_formula
       raise
     end
 
     def take_snapshot
       @snapshot = if @formula_path.exist?
-        { existed: true, content: @formula_path.binread, mode: @formula_path.stat.mode & 0o777 }
+        { existed: true, content: @formula_path.binread, mode: @formula_path.stat.mode & 0777 }
       else
         { existed: false }
       end
@@ -417,11 +440,11 @@ module PdfFormulaUpdate
     def render_formula(release)
       template = ERB.new(@template_path.binread, trim_mode: "-")
       content = template.result_with_hash(
-        version: release.version,
-        source_url: release.source_url,
+        version:       release.version,
+        source_url:    release.source_url,
         source_sha256: release.source_sha256,
       )
-      atomic_write(@formula_path, content, 0o644)
+      atomic_write(@formula_path, content, 0644)
     rescue Errno::ENOENT
       raise Error, "missing Formula template: #{@template_path}"
     end
@@ -457,18 +480,23 @@ module PdfFormulaUpdate
 
     def assert_formula_clean!
       status = @runner.capture!(
-        "git", "-C", @root.to_s, "status", "--porcelain=v1", "--untracked-files=all", "--", FORMULA_PATH,
+        "git", "-C", @root.to_s, "status", "--porcelain=v1", "--untracked-files=all", "--", FORMULA_PATH
       )
       raise Error, "refusing to overwrite dirty #{FORMULA_PATH}" unless status.empty?
     end
 
     def assert_final_state!(state, release)
-      raise Error, "Homebrew parsed version #{state.version.inspect}, expected #{release.version}" unless state.version == release.version
-      raise Error, "Homebrew parsed an unexpected source URL" unless state.source_url == release.source_url
-      raise Error, "Homebrew parsed an unexpected source SHA-256" unless state.source_sha256 == release.source_sha256
-      raise Error, "Homebrew parsed an unexpected bottle root URL" unless state.bottle_root_url == BOTTLE_ROOT_URL
-      raise Error, "Homebrew parsed an unexpected bottle rebuild" unless state.bottle_rebuild == 0
-      raise Error, "Homebrew parsed bottle metadata that disagrees with the release" unless bottle_state_matches?(state, release)
+      if state.version != release.version
+        raise Error,
+              "Homebrew parsed version #{state.version.inspect}, expected #{release.version}"
+      end
+      raise Error, "Homebrew parsed an unexpected source URL" if state.source_url != release.source_url
+      raise Error, "Homebrew parsed an unexpected source SHA-256" if state.source_sha256 != release.source_sha256
+      raise Error, "Homebrew parsed an unexpected bottle root URL" if state.bottle_root_url != BOTTLE_ROOT_URL
+      raise Error, "Homebrew parsed an unexpected bottle rebuild" if state.bottle_rebuild != 0
+      raise Error, "Homebrew parsed bottle metadata that disagrees with the release" unless bottle_state_matches?(
+        state, release
+      )
     end
 
     def state_matches?(state, release)
@@ -476,12 +504,12 @@ module PdfFormulaUpdate
         state.source_url == release.source_url &&
         state.source_sha256 == release.source_sha256 &&
         state.bottle_root_url == BOTTLE_ROOT_URL &&
-        state.bottle_rebuild == 0 &&
+        state.bottle_rebuild.zero? &&
         bottle_state_matches?(state, release)
     end
 
     def bottle_state_matches?(state, release)
-      return false unless state.bottles.keys.sort == BOTTLE_TAGS.sort
+      return false if state.bottles.keys.sort != BOTTLE_TAGS.sort
 
       BOTTLE_TAGS.all? do |tag|
         parsed = state.bottles.fetch(tag)
@@ -495,7 +523,7 @@ module PdfFormulaUpdate
     module_function
 
     def run(arguments)
-      unless arguments.length == 2
+      if arguments.length != 2
         warn "Usage: scripts/update-pdf.rb <release.json> <pdf.bottle.json>"
         return 64
       end

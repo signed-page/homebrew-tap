@@ -1,10 +1,14 @@
+# typed: strict
 # frozen_string_literal: true
 
 require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+# System Ruby does not preload Pathname for this standalone test.
+# rubocop:disable Lint/RedundantRequireStatement
 require "pathname"
+# rubocop:enable Lint/RedundantRequireStatement
 require "stringio"
 require "tmpdir"
 
@@ -36,7 +40,7 @@ class UpdatePdfTest < Minitest::Test
     private
 
     def brew_info(_command)
-      script = <<~'RUBY'
+      script = <<~RUBY
         require "formulary"
         require "json"
         require "pathname"
@@ -67,8 +71,8 @@ class UpdatePdfTest < Minitest::Test
         values[key] = value || true
       end
       source = formula_path.binread
-      source.sub!(/^  url ".*"$/, "  url \"#{flags.fetch('--url')}\"")
-      source.sub!(/^  sha256 ".*"$/, "  sha256 \"#{flags.fetch('--sha256')}\"")
+      source.sub!(/^  url ".*"$/, "  url \"#{flags.fetch("--url")}\"")
+      source.sub!(/^  sha256 ".*"$/, "  sha256 \"#{flags.fetch("--sha256")}\"")
       raise "test bump did not update Formula" unless source.include?(flags.fetch("--version"))
 
       formula_path.binwrite(source)
@@ -86,9 +90,9 @@ class UpdatePdfTest < Minitest::Test
     end
 
     def bottle_block(bottle)
-      lines = ["  bottle do", "    root_url \"#{bottle.fetch('root_url')}\""]
+      lines = ["  bottle do", "    root_url \"#{bottle.fetch("root_url")}\""]
       bottle.fetch("tags").each do |tag, data|
-        lines << "    sha256 cellar: :any_skip_relocation, #{tag}: \"#{data.fetch('sha256')}\""
+        lines << "    sha256 cellar: :any_skip_relocation, #{tag}: \"#{data.fetch("sha256")}\""
       end
       lines << "  end"
       lines.join("\n")
@@ -185,12 +189,12 @@ class UpdatePdfTest < Minitest::Test
 
   def formula_info
     document = JSON.parse(@runner.capture!(
-      ENV.fetch("HOMEBREW_BREW_FILE", "brew"),
-      "info",
-      "--json=v2",
-      "--formula",
-      (@root/"Formula/pdf.rb").to_s,
-    ))
+                            ENV.fetch("HOMEBREW_BREW_FILE", "brew"),
+                            "info",
+                            "--json=v2",
+                            "--formula",
+                            (@root/"Formula/pdf.rb").to_s,
+                          ))
     document.fetch("formulae").fetch(0)
   end
 
@@ -206,7 +210,7 @@ class UpdatePdfTest < Minitest::Test
   end
 
   def formula_behavior
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "formulary"
       require "json"
       require "pathname"
@@ -248,24 +252,24 @@ class UpdatePdfTest < Minitest::Test
       [
         tag,
         {
-          "sha256" => hashes.fetch(index),
+          "sha256"         => hashes.fetch(index),
           "manifestDigest" => "sha256:#{hashes.fetch(index + 3)}",
-          "size" => 1_000 + index,
-          "installedSize" => 2_000 + index,
-          "cellar" => "any_skip_relocation",
+          "size"           => 1_000 + index,
+          "installedSize"  => 2_000 + index,
+          "cellar"         => "any_skip_relocation",
         },
       ]
     end
     {
-      "schema" => 1,
+      "schema"  => 1,
       "formula" => FORMULA,
       "version" => version,
-      "source" => {
+      "source"  => {
         "filename" => "pdf-sign-#{version}-source.tar.gz",
-        "sha256" => hashes.fetch(6),
+        "sha256"   => hashes.fetch(6),
       },
-      "oci" => {
-        "repository" => "ghcr.io/signed-page/tap/pdf",
+      "oci"     => {
+        "repository"  => "ghcr.io/signed-page/tap/pdf",
         "indexDigest" => "sha256:#{hashes.fetch(7)}",
       },
       "bottles" => bottles,
@@ -279,15 +283,15 @@ class UpdatePdfTest < Minitest::Test
     {
       FORMULA => {
         "formula" => {
-          "name" => FORMULA,
+          "name"        => FORMULA,
           "pkg_version" => release.fetch("version"),
-          "path" => "Library/Taps/signed-page/homebrew-tap/Formula/pdf.rb",
+          "path"        => "Library/Taps/signed-page/homebrew-tap/Formula/pdf.rb",
         },
-        "bottle" => {
+        "bottle"  => {
           "root_url" => "https://ghcr.io/v2/signed-page/tap",
-          "cellar" => "any_skip_relocation",
-          "rebuild" => 0,
-          "tags" => tags,
+          "cellar"   => "any_skip_relocation",
+          "rebuild"  => 0,
+          "tags"     => tags,
         },
       },
     }

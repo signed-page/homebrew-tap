@@ -319,3 +319,37 @@ jobs:
             echo "Anonymous blob pull did not preserve the expected index" >&2
             exit 1
           }
+
+      - name: Publish verified completion tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.source.outputs.version }}
+          EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          publisher_auth="$RUNNER_TEMP/publisher-auth.json"
+          printf '%s' "$GH_TOKEN" |
+            skopeo login --authfile "$publisher_auth" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+
+          verified_tag="$VERSION-verified"
+          verified_raw="$RUNNER_TEMP/verified-index.json"
+          if skopeo inspect --authfile "$publisher_auth" --raw "docker://${IMAGE}:$verified_tag" > "$verified_raw" 2>/dev/null; then
+            existing_digest="sha256:$(sha256sum "$verified_raw" | cut -d' ' -f1)"
+            if [[ "$existing_digest" != "$EXPECTED_DIGEST" ]]; then
+              echo "Verified completion tag already points to $existing_digest" >&2
+              exit 1
+            fi
+          else
+            REGISTRY_AUTH_FILE="$publisher_auth" skopeo copy --all --preserve-digests \
+              "docker://${IMAGE}@${EXPECTED_DIGEST}" \
+              "docker://${IMAGE}:$verified_tag"
+          fi
+
+          skopeo inspect --authfile "$publisher_auth" --raw \
+            "docker://${IMAGE}:$verified_tag" > "$verified_raw"
+          verified_digest="sha256:$(sha256sum "$verified_raw" | cut -d' ' -f1)"
+          if [[ "$verified_digest" != "$EXPECTED_DIGEST" ]]; then
+            echo "Verified completion tag did not preserve the expected index" >&2
+            exit 1
+          fi

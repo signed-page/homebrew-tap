@@ -47,19 +47,15 @@ jobs:
         run: brew test-bot --only-tap-syntax
 
       - name: Audit Formula
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew audit --strict --online signed-page/tap/pdf
 
       - name: Install native bottle
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew install --force-bottle signed-page/tap/pdf
 
       - name: Test Formula
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew test signed-page/tap/pdf
 
       - name: Run installed executable
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: pdf-sign --help
 
   ubuntu-24-04:
@@ -92,19 +88,15 @@ jobs:
         run: brew test-bot --only-tap-syntax
 
       - name: Audit Formula
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew audit --strict --online signed-page/tap/pdf
 
       - name: Install native bottle
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew install --force-bottle signed-page/tap/pdf
 
       - name: Test Formula
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew test signed-page/tap/pdf
 
       - name: Run installed executable
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: pdf-sign --help
 
   ubuntu-24-04-arm:
@@ -137,17 +129,13 @@ jobs:
         run: brew test-bot --only-tap-syntax
 
       - name: Audit Formula
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew audit --strict --online signed-page/tap/pdf
 
       - name: Install native bottle
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew install --force-bottle signed-page/tap/pdf
 
       - name: Test Formula
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: brew test signed-page/tap/pdf
 
       - name: Run installed executable
-        if: ${{ hashFiles('Formula/pdf.rb') != '' }}
         run: pdf-sign --help

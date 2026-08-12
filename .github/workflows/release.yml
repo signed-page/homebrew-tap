@@ -93,6 +93,14 @@ jobs:
           extra_nix_config: |
             accept-flake-config = true
 
+      - name: Configure OCI registries
+        run: |
+          cat > "$RUNNER_TEMP/registries.conf" <<'EOF'
+          unqualified-search-registries = []
+          EOF
+          echo "CONTAINERS_REGISTRIES_CONF=$RUNNER_TEMP/registries.conf" >> "$GITHUB_ENV"
+          echo "CONTAINERS_REGISTRIES_CONF_OVERRIDE=" >> "$GITHUB_ENV"
+
       - name: Install OCI tooling
         run: nix profile install nixpkgs#skopeo
 
